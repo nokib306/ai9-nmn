@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { type BrowserProfile } from '../types';
+import { type BrowserProfile, type BrowserExtension, ProxyType } from '../types';
 import { CloseIcon } from './icons/CloseIcon';
 import { ArrowLeftIcon } from './icons/ArrowLeftIcon';
 import { ArrowRightIcon } from './icons/ArrowRightIcon';
 import { RefreshIcon } from './icons/RefreshIcon';
 import { InfoIcon } from './icons/InfoIcon';
+import { ExtensionsIcon } from './icons/ExtensionsIcon';
+import ProfileInfoView from './ProfileInfoView';
 
 
 interface BrowserViewProps {
@@ -14,25 +16,30 @@ interface BrowserViewProps {
   zIndex: number;
   onFocus: () => void;
   urlOverride?: string;
+  allExtensions: BrowserExtension[];
 }
 
 const parseResolution = (res: string) => {
   const [width, height] = res.split('x').map(Number);
-  return { width: Math.max(width, 400), height: Math.max(height, 300) };
+  return { width: Math.max(width, 500), height: Math.max(height, 600) };
 };
 
-const BrowserView: React.FC<BrowserViewProps> = ({ profile, onClose, initialPosition, zIndex, onFocus, urlOverride }) => {
+const BrowserView: React.FC<BrowserViewProps> = ({ profile, onClose, initialPosition, zIndex, onFocus, urlOverride, allExtensions }) => {
   const [size, setSize] = useState(parseResolution(profile.screenResolution));
   const [position, setPosition] = useState(initialPosition);
-  const [url, setUrl] = useState('https://www.google.com/search?q=what+is+my+user+agent');
-  const [inputValue, setInputValue] = useState(url);
+  const [url, setUrl] = useState('about:home');
+  const [inputValue, setInputValue] = useState('about:home');
+  const [activeExtensionMenu, setActiveExtensionMenu] = useState<string | null>(null);
 
   const dragRef = useRef({ x: 0, y: 0 });
   const resizeRef = useRef({ x: 0, y: 0, width: 0, height: 0 });
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const isDragging = useRef(false);
   const isResizing = useRef(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  
+  const activeExtensions = allExtensions.filter(ext => profile.extensionIds.includes(ext.id));
 
   useEffect(() => {
     if (urlOverride) {
@@ -45,6 +52,18 @@ const BrowserView: React.FC<BrowserViewProps> = ({ profile, onClose, initialPosi
     }
   }, [urlOverride]);
 
+    useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+        if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+            setActiveExtensionMenu(null);
+        }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+        document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
+
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (isDragging.current) {
       setPosition({
@@ -55,7 +74,7 @@ const BrowserView: React.FC<BrowserViewProps> = ({ profile, onClose, initialPosi
     if (isResizing.current) {
       const newWidth = resizeRef.current.width + (e.clientX - resizeRef.current.x);
       const newHeight = resizeRef.current.height + (e.clientY - resizeRef.current.y);
-      setSize({ width: Math.max(newWidth, 400), height: Math.max(newHeight, 300) });
+      setSize({ width: Math.max(newWidth, 500), height: Math.max(newHeight, 600) });
     }
   }, []);
 
@@ -104,6 +123,10 @@ const BrowserView: React.FC<BrowserViewProps> = ({ profile, onClose, initialPosi
 
   const handleNavigate = () => {
     let newUrl = inputValue.trim();
+    if (newUrl === 'about:home') {
+        setUrl('about:home');
+        return;
+    }
     if (!/^(https?:\/\/)/.test(newUrl)) {
       newUrl = `https://${newUrl}`;
     }
@@ -156,33 +179,59 @@ const BrowserView: React.FC<BrowserViewProps> = ({ profile, onClose, initialPosi
           onKeyDown={handleKeyDown}
           className="w-full bg-brand-dark border border-brand-dark/50 focus:border-brand-secondary focus:ring-brand-secondary rounded-md px-2 py-1 text-sm text-brand-text"
         />
+         <div className="flex items-center gap-1 pl-2 relative">
+            {activeExtensions.map(ext => (
+                <div key={ext.id} className="relative">
+                    <button
+                        title={ext.name}
+                        className="text-brand-text-secondary p-1 hover:bg-brand-dark rounded"
+                        onClick={() => setActiveExtensionMenu(activeExtensionMenu === ext.id ? null : ext.id)}
+                    >
+                        <ExtensionsIcon className="w-5 h-5" />
+                    </button>
+                    {activeExtensionMenu === ext.id && (
+                        <div ref={menuRef} className="absolute top-full right-0 mt-2 w-48 bg-brand-dark rounded-md shadow-lg z-10 p-1 animate-fade-in-up">
+                            <div className="font-bold text-white px-2 py-1">{ext.name}</div>
+                            <div className="border-t border-gray-700 my-1"></div>
+                            <button className="w-full text-left px-2 py-1 text-sm rounded text-brand-text-secondary opacity-50 cursor-not-allowed">Manage extension</button>
+                            <button className="w-full text-left px-2 py-1 text-sm rounded text-brand-text-secondary opacity-50 cursor-not-allowed">Remove from profile</button>
+                        </div>
+                    )}
+                </div>
+            ))}
+        </div>
       </div>
 
-      <div className="flex-grow bg-gray-900">
-        <iframe
-          ref={iframeRef}
-          src={url}
-          className="w-full h-full border-0"
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-          onError={() => console.error("Error loading iframe content.")}
-          onLoad={() => {
-              try {
-                const newLocation = iframeRef.current?.contentWindow?.location.href;
-                if(newLocation && newLocation !== 'about:blank') {
-                    setInputValue(newLocation);
-                }
-              } catch(e) {
-                  // Cross-origin error, can't access location. This is expected.
-              }
-          }}
-        />
+      <div className="flex-grow bg-brand-background overflow-auto">
+        {url === 'about:home' ? (
+            <ProfileInfoView profile={profile} />
+        ) : (
+            <iframe
+                ref={iframeRef}
+                src={url}
+                className="w-full h-full border-0"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                onError={() => console.error("Error loading iframe content.")}
+                onLoad={() => {
+                    try {
+                        const newLocation = iframeRef.current?.contentWindow?.location.href;
+                        if(newLocation && newLocation !== 'about:blank') {
+                            setInputValue(newLocation);
+                        }
+                    } catch(e) {
+                        // Cross-origin error, can't access location. This is expected.
+                    }
+                }}
+            />
+        )}
       </div>
 
       <div className="bg-brand-dark/80 px-3 py-1 text-xs text-brand-text-secondary flex items-center justify-between border-t border-brand-dark/50">
         <div className="flex items-center gap-2 overflow-hidden">
             <span className="truncate flex items-center gap-1" title={profile.userAgent}>UA: Custom <InfoIcon title="This is a simulated setting."/></span>
-            <span className="truncate flex items-center gap-1">Proxy: {profile.proxy ? profile.proxy.split(':')[0] : 'None'} <InfoIcon title="This is a simulated setting."/></span>
-            <span className="truncate flex items-center gap-1">WebRTC: {profile.webRTC} <InfoIcon title="This is a simulated setting."/></span>
+            <span className="truncate flex items-center gap-1">Proxy: {profile.proxy?.type !== ProxyType.None ? profile.proxy.ip : 'None'} <InfoIcon title="This is a simulated setting."/></span>
+            <span className="truncate flex items-center gap-1">CPU: {profile.cpuCores} <InfoIcon title="This is a simulated setting."/></span>
+            <span className="truncate flex items-center gap-1">RAM: {profile.memory}GB <InfoIcon title="This is a simulated setting."/></span>
         </div>
         <div 
           className="w-3 h-3 cursor-se-resize"

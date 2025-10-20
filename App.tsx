@@ -1,5 +1,5 @@
-import React, { useState, useCallback } from 'react';
-import { type BrowserProfile, ProfileStatus, ChatMessage, MessageAuthor } from './types';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import { type BrowserProfile, ProfileStatus, BrowserExtension, ProxyConfig, ProxyType } from './types';
 import Header from './components/Header';
 import ProfileCard from './components/ProfileCard';
 import ProfileModal from './components/ProfileModal';
@@ -7,24 +7,66 @@ import { PlusIcon } from './components/icons/PlusIcon';
 import BrowserView from './components/BrowserView';
 import AiAgent from './components/AiAgent';
 import { ChatBubbleIcon } from './components/icons/ChatBubbleIcon';
+import ConfirmationModal from './components/ConfirmationModal';
+import ExtensionsModal from './components/ExtensionsModal';
+import { searchWeb } from './services/geminiService';
 
 const App: React.FC = () => {
-  const [profiles, setProfiles] = useState<BrowserProfile[]>([]);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [profiles, setProfiles] = useState<BrowserProfile[]>(() => {
+    try {
+      const savedProfiles = localStorage.getItem('auraBrowserProfiles');
+      return savedProfiles ? JSON.parse(savedProfiles) : [];
+    } catch (error) {
+      console.error("Error loading profiles from localStorage", error);
+      return [];
+    }
+  });
+  const [extensions, setExtensions] = useState<BrowserExtension[]>(() => {
+    try {
+      const savedExtensions = localStorage.getItem('auraBrowserExtensions');
+      return savedExtensions ? JSON.parse(savedExtensions) : [];
+    } catch (error) {
+      console.error("Error loading extensions from localStorage", error);
+      return [];
+    }
+  });
+
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [isExtensionsModalOpen, setIsExtensionsModalOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<BrowserProfile | null>(null);
   const [zIndexes, setZIndexes] = useState<{ [profileId: string]: number }>({});
   const [nextZIndex, setNextZIndex] = useState(100);
   const [isAiAgentVisible, setIsAiAgentVisible] = useState(false);
   const [runningProfileUrls, setRunningProfileUrls] = useState<{[profileId: string]: string}>({});
 
-  const handleOpenModal = (profile: BrowserProfile | null) => {
+  const [showAiAgent, setShowAiAgent] = useState(true);
+  const [deletingProfile, setDeletingProfile] = useState<BrowserProfile | null>(null);
+
+  useEffect(() => {
+    try {
+        localStorage.setItem('auraBrowserProfiles', JSON.stringify(profiles));
+    } catch (error) {
+        console.error("Error saving profiles to localStorage", error);
+    }
+  }, [profiles]);
+
+  useEffect(() => {
+    try {
+        localStorage.setItem('auraBrowserExtensions', JSON.stringify(extensions));
+    } catch (error) {
+        console.error("Error saving extensions to localStorage", error);
+    }
+  }, [extensions]);
+
+
+  const handleOpenProfileModal = (profile: BrowserProfile | null) => {
     setEditingProfile(profile);
-    setIsModalOpen(true);
+    setIsProfileModalOpen(true);
   };
 
-  const handleCloseModal = () => {
+  const handleCloseProfileModal = () => {
     setEditingProfile(null);
-    setIsModalOpen(false);
+    setIsProfileModalOpen(false);
   };
 
   const handleSaveProfile = (profile: BrowserProfile) => {
@@ -33,12 +75,45 @@ const App: React.FC = () => {
     } else {
       setProfiles([...profiles, { ...profile, id: Date.now().toString(), status: ProfileStatus.Stopped }]);
     }
-    handleCloseModal();
+    handleCloseProfileModal();
   };
 
-  const handleDeleteProfile = useCallback((id: string) => {
-    setProfiles(prevProfiles => prevProfiles.filter(p => p.id !== id));
-  }, []);
+  const handleDeleteRequest = useCallback((id: string) => {
+      const profileToDelete = profiles.find(p => p.id === id);
+      if (profileToDelete) {
+          setDeletingProfile(profileToDelete);
+      }
+  }, [profiles]);
+
+  const handleConfirmDelete = useCallback(() => {
+    if (deletingProfile) {
+      setProfiles(prevProfiles => prevProfiles.filter(p => p.id !== deletingProfile.id));
+      setDeletingProfile(null);
+    }
+  }, [deletingProfile]);
+
+  const handleCloseDeleteModal = () => {
+    setDeletingProfile(null);
+  };
+  
+  const handleAddExtension = (name: string): string => {
+    const newExtension: BrowserExtension = {
+        id: Date.now().toString(),
+        name,
+        icon: 'puzzle', // Placeholder icon name
+    };
+    setExtensions(prev => [...prev, newExtension]);
+    return newExtension.id;
+  };
+
+  const handleRemoveExtension = (id: string) => {
+    setExtensions(prev => prev.filter(ext => ext.id !== id));
+    // Also remove this extension from any profiles that use it
+    setProfiles(prev => prev.map(p => ({
+        ...p,
+        extensionIds: p.extensionIds.filter(extId => extId !== id),
+    })));
+  };
 
   const handleBringToFront = useCallback((id: string) => {
     if (zIndexes[id] === nextZIndex - 1) return; // Already in front
@@ -55,7 +130,6 @@ const App: React.FC = () => {
           if (newStatus === ProfileStatus.Running) {
             handleBringToFront(id);
           } else {
-            // Clean up z-index and URL when stopping
             setZIndexes(prev => {
               const newZIndexes = { ...prev };
               delete newZIndexes[id];
@@ -75,7 +149,6 @@ const App: React.FC = () => {
     );
   }, [handleBringToFront]);
 
-  // --- AI Agent Handlers ---
   const handleAiNavigate = useCallback((profileName: string, url: string): string => {
       const profile = profiles.find(p => p.name.toLowerCase() === profileName.toLowerCase() && p.status === ProfileStatus.Running);
       if (!profile) {
@@ -107,42 +180,111 @@ const App: React.FC = () => {
       if (profile.status !== ProfileStatus.Running) {
           return `Profile "${profileName}" is not running.`;
       }
-      handleLaunchProfile(profile.id); // This toggles the status to stopped
+      handleLaunchProfile(profile.id);
       return `Closing profile "${profileName}".`;
   }, [profiles, handleLaunchProfile]);
 
-  const handleAiCreateProfile = useCallback((profileName: string): string => {
+  const handleAiCreateProfile = useCallback((profileName: string, proxy?: string): string => {
     const existingProfile = profiles.find(p => p.name.toLowerCase() === profileName.toLowerCase());
     if (existingProfile) {
         return `A profile with the name "${profileName}" already exists.`;
     }
+
+    let proxyConfig: ProxyConfig = { type: ProxyType.None, ip: '', port: '', username: '', password: '' };
+    if (proxy) {
+        const parts = proxy.split(':');
+        if (parts.length >= 2) {
+            proxyConfig = {
+                type: ProxyType.HTTP, // Default to HTTP for AI creation
+                ip: parts[0],
+                port: parts[1],
+                username: parts[2] || '',
+                password: parts[3] || '',
+            };
+        }
+    }
+
     const newProfile: BrowserProfile = {
         id: Date.now().toString(),
         name: profileName,
         status: ProfileStatus.Stopped,
-        proxy: '',
+        proxy: proxyConfig,
         userAgent: '',
         screenResolution: '390x844',
         timezone: 'UTC',
         webRTC: 'Disabled',
         macAddress: '',
         cookies: '',
+        extensionIds: [],
+        language: 'en-US',
+        latitude: 34.0522,
+        longitude: -118.2437,
+        cpuCores: 10,
+        memory: 8,
+        deviceName: '',
+        audioContextNoise: true,
+        mediaDeviceNoise: true,
+        clientRectsNoise: true,
+        speechVoicesSpoof: true,
+        webGLVendor: 'Google Inc. (AMD)',
+        webGLRenderer: 'ANGLE (AMD, AMD Radeon Pro 5700 XT OpenGL Engine, 4.1 ATI-4.2.13)',
     };
     setProfiles(prev => [...prev, newProfile]);
-    return `Successfully created a new profile named "${profileName}".`;
+    if (proxy) {
+        return `Successfully created a new profile named "${profileName}" with proxy. You can now edit it to generate a full fingerprint.`;
+    }
+    return `Successfully created a new profile named "${profileName}". You can now edit it to generate a full fingerprint.`;
   }, [profiles]);
 
+  const handleAiLaunchAndNavigate = useCallback((profileName: string, url: string): string => {
+    const profile = profiles.find(p => p.name.toLowerCase() === profileName.toLowerCase());
+    if (!profile) {
+      return `Profile "${profileName}" not found.`;
+    }
 
-  const runningProfiles = profiles.filter(p => p.status === ProfileStatus.Running);
+    if (profile.status !== ProfileStatus.Running) {
+        handleLaunchProfile(profile.id);
+    }
+    
+    setTimeout(() => {
+        setRunningProfileUrls(prev => ({ ...prev, [profile.id]: url }));
+        handleBringToFront(profile.id);
+    }, 100);
+
+    let fullUrl = url.trim();
+    if (!/^(https?:\/\/)/.test(fullUrl)) {
+      fullUrl = `https://${fullUrl}`;
+    }
+    return `Successfully launched "${profileName}" and navigated to ${fullUrl}.`;
+
+  }, [profiles, handleLaunchProfile, handleBringToFront]);
+
+  const handleAiSearch = useCallback(async (query: string): Promise<string> => {
+    return await searchWeb(query);
+  }, []);
+
+  const handleToggleAiAgent = (enabled: boolean) => {
+      setShowAiAgent(enabled);
+      if (!enabled) {
+          setIsAiAgentVisible(false);
+      }
+  };
+
+  const runningProfiles = useMemo(() => profiles.filter(p => p.status === ProfileStatus.Running), [profiles]);
+  const allExtensions = useMemo(() => extensions, [extensions]);
 
   return (
     <div className="min-h-screen bg-brand-background text-brand-text font-sans selection:bg-brand-secondary selection:text-white">
-      <Header />
+      <Header 
+        showAiAgent={showAiAgent} 
+        onToggleAiAgent={handleToggleAiAgent}
+        onOpenExtensions={() => setIsExtensionsModalOpen(true)}
+       />
       <main className="p-4 sm:p-6 lg:p-8">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-bold text-white">Browser Profiles</h1>
           <button
-            onClick={() => handleOpenModal(null)}
+            onClick={() => handleOpenProfileModal(null)}
             className="flex items-center gap-2 px-4 py-2 bg-brand-secondary hover:bg-blue-500 text-white font-semibold rounded-lg shadow-md transition-transform transform hover:scale-105"
           >
             <PlusIcon />
@@ -161,8 +303,8 @@ const App: React.FC = () => {
               <ProfileCard
                 key={profile.id}
                 profile={profile}
-                onEdit={() => handleOpenModal(profile)}
-                onDelete={handleDeleteProfile}
+                onEdit={() => handleOpenProfileModal(profile)}
+                onDelete={handleDeleteRequest}
                 onLaunch={handleLaunchProfile}
               />
             ))}
@@ -170,14 +312,31 @@ const App: React.FC = () => {
         )}
       </main>
       
-      {isModalOpen && (
+      {isProfileModalOpen && (
         <ProfileModal
-          isOpen={isModalOpen}
-          onClose={handleCloseModal}
+          isOpen={isProfileModalOpen}
+          onClose={handleCloseProfileModal}
           onSave={handleSaveProfile}
           profile={editingProfile}
+          extensions={allExtensions}
         />
       )}
+      
+      <ExtensionsModal
+        isOpen={isExtensionsModalOpen}
+        onClose={() => setIsExtensionsModalOpen(false)}
+        extensions={allExtensions}
+        onAdd={handleAddExtension}
+        onRemove={handleRemoveExtension}
+      />
+
+      <ConfirmationModal
+        isOpen={!!deletingProfile}
+        onClose={handleCloseDeleteModal}
+        onConfirm={handleConfirmDelete}
+        title="Delete Profile"
+        message={`Are you sure you want to permanently delete the profile "${deletingProfile?.name}"? This action cannot be undone.`}
+      />
 
       {runningProfiles.map((profile, index) => (
           <BrowserView
@@ -188,28 +347,35 @@ const App: React.FC = () => {
             zIndex={zIndexes[profile.id] || 100}
             onFocus={() => handleBringToFront(profile.id)}
             urlOverride={runningProfileUrls[profile.id]}
+            allExtensions={allExtensions}
           />
       ))}
       
-      <button 
-        onClick={() => setIsAiAgentVisible(!isAiAgentVisible)}
-        className="fixed bottom-6 right-6 bg-brand-primary h-16 w-16 rounded-full shadow-lg flex items-center justify-center text-white hover:bg-brand-secondary transition-all duration-300 transform hover:scale-110 z-[9999]"
-        aria-label="Toggle AI Agent"
-      >
-        <ChatBubbleIcon className="w-8 h-8"/>
-      </button>
+      {showAiAgent && (
+        <button 
+          onClick={() => setIsAiAgentVisible(!isAiAgentVisible)}
+          className="fixed bottom-6 right-6 bg-brand-primary h-16 w-16 rounded-full shadow-lg flex items-center justify-center text-white hover:bg-brand-secondary transition-all duration-300 transform hover:scale-110 z-[9999]"
+          aria-label="Toggle AI Agent"
+        >
+          <ChatBubbleIcon className="w-8 h-8"/>
+        </button>
+      )}
 
-      <AiAgent 
-        isVisible={isAiAgentVisible}
-        onClose={() => setIsAiAgentVisible(false)}
-        profiles={profiles}
-        actions={{
-            navigate: handleAiNavigate,
-            launch: handleAiLaunch,
-            close: handleAiClose,
-            create: handleAiCreateProfile,
-        }}
-      />
+      {showAiAgent && (
+        <AiAgent 
+          isVisible={isAiAgentVisible}
+          onClose={() => setIsAiAgentVisible(false)}
+          profiles={profiles}
+          actions={{
+              navigate: handleAiNavigate,
+              launch: handleAiLaunch,
+              close: handleAiClose,
+              create: handleAiCreateProfile,
+              launchAndNavigate: handleAiLaunchAndNavigate,
+              search: handleAiSearch,
+          }}
+        />
+      )}
     </div>
   );
 };

@@ -1,9 +1,10 @@
 import React from 'react';
-import { type BrowserProfile, ProfileStatus } from '../types';
+import { type BrowserProfile, ProfileStatus, ProxyType } from '../types';
 import { EditIcon } from './icons/EditIcon';
 import { TrashIcon } from './icons/TrashIcon';
 import { PlayIcon } from './icons/PlayIcon';
 import { StopIcon } from './icons/StopIcon';
+import { ExtensionsIcon } from './icons/ExtensionsIcon';
 
 interface ProfileCardProps {
   profile: BrowserProfile;
@@ -26,8 +27,15 @@ const ProfileCard: React.FC<ProfileCardProps> = ({ profile, onEdit, onDelete, on
     }
   };
 
+  const getProxyDisplay = () => {
+    if (!profile.proxy || profile.proxy.type === ProxyType.None) {
+        return 'None';
+    }
+    return `${profile.proxy.type}: ${profile.proxy.ip}:${profile.proxy.port}`;
+  };
+
   return (
-    <div className="bg-brand-surface rounded-lg shadow-lg overflow-hidden transition-all duration-300 hover:shadow-2xl hover:-translate-y-1 flex flex-col">
+    <div className="bg-brand-surface rounded-lg shadow-lg overflow-hidden transition-all duration-300 hover:shadow-2xl hover:-translate-y-1 flex flex-col border border-brand-dark/30">
       <div className="p-5 flex-grow">
         <div className="flex justify-between items-start">
           <h3 className="text-lg font-bold text-white truncate pr-2">{profile.name}</h3>
@@ -35,14 +43,23 @@ const ProfileCard: React.FC<ProfileCardProps> = ({ profile, onEdit, onDelete, on
             {profile.status}
           </span>
         </div>
+        <p className="text-sm text-brand-text-secondary mt-1 truncate">{profile.deviceName || 'No device name'}</p>
         <div className="mt-4 space-y-2 text-sm text-brand-text-secondary">
-          <p className="flex items-center">
-            <span className="font-semibold w-24">Proxy:</span>
-            <span className="truncate">{profile.proxy || 'None'}</span>
+           <p className="flex items-center">
+             <span className="font-semibold w-28">Fingerprint ID:</span>
+             <span className="truncate font-mono text-xs">{profile.id.substring(0, 8)}...</span>
           </p>
           <p className="flex items-center">
-            <span className="font-semibold w-24">User Agent:</span>
+            <span className="font-semibold w-28">Proxy:</span>
+            <span className="truncate">{getProxyDisplay()}</span>
+          </p>
+          <p className="flex items-center">
+            <span className="font-semibold w-28">User Agent:</span>
             <span className="truncate">{profile.userAgent ? 'Custom' : 'Default'}</span>
+          </p>
+          <p className="flex items-center">
+            <span className="font-semibold w-28 flex items-center gap-1"><ExtensionsIcon className="w-4 h-4"/> Extensions:</span>
+            <span>{profile.extensionIds?.length || 0}</span>
           </p>
         </div>
       </div>

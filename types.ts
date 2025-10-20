@@ -1,13 +1,34 @@
+// FIX: Removed self-import of 'ProfileStatus' which caused a conflict with its own enum declaration.
 export enum ProfileStatus {
     Running = 'Running',
     Stopped = 'Stopped',
     Error = 'Error',
 }
 
+export enum ProxyType {
+    None = 'None',
+    HTTP = 'HTTP',
+    SOCKS5 = 'SOCKS5',
+}
+
+export interface ProxyConfig {
+    type: ProxyType;
+    ip: string;
+    port: string;
+    username?: string;
+    password?: string;
+}
+
+export interface BrowserExtension {
+    id: string;
+    name: string;
+    icon: string; // For simplicity, we'll use a generic icon or a placeholder URL
+}
+
 export interface BrowserProfile {
     id: string;
     name: string;
-    proxy: string;
+    proxy: ProxyConfig;
     userAgent: string;
     screenResolution: string;
     timezone: string;
@@ -15,6 +36,24 @@ export interface BrowserProfile {
     macAddress: string;
     cookies: string;
     status: ProfileStatus;
+    extensionIds: string[];
+    // New Geolocation Fields
+    language: string;
+    // FIX: Added missing latitude and longitude properties to resolve type error in App.tsx.
+    latitude: number;
+    longitude: number;
+    // New Hardware Spoofing Fields
+    cpuCores: number;
+    memory: number; // in GB
+    deviceName: string;
+    // New Fingerprint Protection Fields
+    audioContextNoise: boolean;
+    mediaDeviceNoise: boolean;
+    clientRectsNoise: boolean;
+    speechVoicesSpoof: boolean;
+    // New WebGL Fields
+    webGLVendor: string;
+    webGLRenderer: string;
 }
 
 export enum MessageAuthor {
@@ -24,6 +63,7 @@ export enum MessageAuthor {
 }
 
 export interface ChatMessage {
+    id: number;
     author: MessageAuthor;
     text: string;
     isLoading?: boolean;

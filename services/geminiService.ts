@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type, FunctionDeclaration, FunctionCall } from "@google/genai";
-import { BrowserProfile, ProfileStatus } from "../types";
+import { BrowserProfile, HealthStatus, ProfileStatus } from "../types";
 
 const API_KEY = process.env.API_KEY;
 
@@ -96,6 +96,63 @@ export const generateFullFingerprint = async (profileName: string): Promise<Part
         return null;
     }
 };
+
+export const analyzeProfileFingerprint = async (profile: BrowserProfile): Promise<Omit<HealthStatus, 'lastChecked'> | null> => {
+    if (!API_KEY) {
+        console.error("API Key not configured.");
+        return null;
+    }
+    const { proxy, ...profileData } = profile;
+    const prompt = `You are a digital privacy expert specializing in browser fingerprinting. Analyze the following profile configuration for any inconsistencies that might increase the risk of detection by advanced anti-bot systems.
+    
+    Profile Data: ${JSON.stringify(profileData, null, 2)}
+    Proxy IP (if any): ${proxy.ip || 'N/A'}
+
+    Check for:
+    1.  User Agent vs. Platform: Does the User Agent (e.g., iPhone) match the WebGL vendor/renderer (e.g., Apple GPU)?
+    2.  Geo-IP Mismatches: If a proxy IP is present, do the timezone and language plausibly match the IP's likely location?
+    3.  Hardware Sanity: Are the CPU cores and memory typical for the device type suggested by the User Agent?
+    4.  General inconsistencies.
+
+    Respond with a single raw JSON object with these exact keys:
+    - "risk": A string, either "low", "medium", or "high".
+    - "report": An array of objects. Each object should have keys: "parameter" (the name of the faulty setting), "issue" (a brief description of the problem), and "suggestion" (a recommended value or action). If there are no issues, return an empty array.
+    `;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-pro", // Using Pro for better reasoning
+            contents: [{ parts: [{ text: prompt }] }],
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        risk: { type: Type.STRING, enum: ['low', 'medium', 'high'] },
+                        report: {
+                            type: Type.ARRAY,
+                            items: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    parameter: { type: Type.STRING },
+                                    issue: { type: Type.STRING },
+                                    suggestion: { type: Type.STRING }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let jsonStr = response.text.trim();
+        jsonStr = jsonStr.replace(/^```json\s*|```$/g, '').trim();
+        return JSON.parse(jsonStr);
+    } catch (error) {
+        console.error("Error analyzing fingerprint:", error);
+        return null;
+    }
+};
+
 
 export const generateUserAgent = async (): Promise<string> => {
     const prompt = `Generate a single, realistic, and valid user agent string for a recent model of an Apple iPhone running a recent version of iOS. Only return the user agent string itself, with no extra text or explanation. Example: Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1`;

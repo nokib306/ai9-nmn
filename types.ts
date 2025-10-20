@@ -25,6 +25,18 @@ export interface BrowserExtension {
     icon: string; // For simplicity, we'll use a generic icon or a placeholder URL
 }
 
+export interface HealthReportItem {
+    parameter: string;
+    issue: string;
+    suggestion: string;
+}
+
+export interface HealthStatus {
+    risk: 'low' | 'medium' | 'high' | 'unchecked';
+    report: HealthReportItem[];
+    lastChecked: string | null;
+}
+
 export interface BrowserProfile {
     id: string;
     name: string;
@@ -54,6 +66,8 @@ export interface BrowserProfile {
     // New WebGL Fields
     webGLVendor: string;
     webGLRenderer: string;
+    // New Health Check field
+    healthStatus?: HealthStatus;
 }
 
 export enum MessageAuthor {

@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
-import { type BrowserProfile, ProfileStatus, BrowserExtension, ProxyConfig, ProxyType } from './types';
+import { type BrowserProfile, ProfileStatus, BrowserExtension, ProxyConfig, ProxyType, HealthReportItem } from './types';
 import Header from './components/Header';
 import ProfileCard from './components/ProfileCard';
 import ProfileModal from './components/ProfileModal';
@@ -9,7 +9,8 @@ import AiAgent from './components/AiAgent';
 import { ChatBubbleIcon } from './components/icons/ChatBubbleIcon';
 import ConfirmationModal from './components/ConfirmationModal';
 import ExtensionsModal from './components/ExtensionsModal';
-import { searchWeb } from './services/geminiService';
+import HealthReportModal from './components/HealthReportModal';
+import { searchWeb, analyzeProfileFingerprint } from './services/geminiService';
 
 const App: React.FC = () => {
   const [profiles, setProfiles] = useState<BrowserProfile[]>(() => {
@@ -33,11 +34,15 @@ const App: React.FC = () => {
 
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isExtensionsModalOpen, setIsExtensionsModalOpen] = useState(false);
+  const [isHealthReportModalOpen, setIsHealthReportModalOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<BrowserProfile | null>(null);
+  const [viewingHealthProfile, setViewingHealthProfile] = useState<BrowserProfile | null>(null);
   const [zIndexes, setZIndexes] = useState<{ [profileId: string]: number }>({});
   const [nextZIndex, setNextZIndex] = useState(100);
   const [isAiAgentVisible, setIsAiAgentVisible] = useState(false);
   const [runningProfileUrls, setRunningProfileUrls] = useState<{[profileId: string]: string}>({});
+  const [checkingHealthProfileId, setCheckingHealthProfileId] = useState<string | null>(null);
+
 
   const [showAiAgent, setShowAiAgent] = useState(true);
   const [deletingProfile, setDeletingProfile] = useState<BrowserProfile | null>(null);
@@ -70,10 +75,15 @@ const App: React.FC = () => {
   };
 
   const handleSaveProfile = (profile: BrowserProfile) => {
+    const newProfileData = {
+      ...profile,
+      healthStatus: profile.healthStatus || { risk: 'unchecked', report: [], lastChecked: null },
+    };
+
     if (editingProfile) {
-      setProfiles(profiles.map(p => (p.id === profile.id ? profile : p)));
+      setProfiles(profiles.map(p => (p.id === profile.id ? newProfileData : p)));
     } else {
-      setProfiles([...profiles, { ...profile, id: Date.now().toString(), status: ProfileStatus.Stopped }]);
+      setProfiles([...profiles, { ...newProfileData, id: Date.now().toString(), status: ProfileStatus.Stopped }]);
     }
     handleCloseProfileModal();
   };
@@ -148,6 +158,48 @@ const App: React.FC = () => {
       })
     );
   }, [handleBringToFront]);
+
+  const handleHealthCheck = useCallback(async (profileId: string) => {
+      const profileToCheck = profiles.find(p => p.id === profileId);
+      if (!profileToCheck) return;
+
+      setCheckingHealthProfileId(profileId);
+      const result = await analyzeProfileFingerprint(profileToCheck);
+      setCheckingHealthProfileId(null);
+      
+      if (result) {
+          setProfiles(prev => prev.map(p => p.id === profileId ? {
+              ...p,
+              healthStatus: { ...result, lastChecked: new Date().toISOString() }
+          } : p));
+      } else {
+          alert("Failed to perform health check. Please check your API key and try again.");
+      }
+  }, [profiles]);
+  
+  const handleViewHealthReport = (profileId: string) => {
+      const profile = profiles.find(p => p.id === profileId);
+      if (profile) {
+          setViewingHealthProfile(profile);
+          setIsHealthReportModalOpen(true);
+      }
+  };
+
+  const handleApplyHealthFix = (profileId: string, fix: HealthReportItem) => {
+      setProfiles(prev => prev.map(p => {
+          if (p.id === profileId) {
+              const updatedProfile = { ...p, [fix.parameter]: fix.suggestion };
+              // Also update the report to reflect the fix
+              const updatedReport = p.healthStatus?.report.filter(item => item.parameter !== fix.parameter) || [];
+              const updatedHealthStatus = { ...p.healthStatus!, report: updatedReport };
+              if(updatedReport.length === 0) {
+                updatedHealthStatus.risk = 'low';
+              }
+              return { ...updatedProfile, healthStatus: updatedHealthStatus };
+          }
+          return p;
+      }));
+  };
 
   const handleAiNavigate = useCallback((profileName: string, url: string): string => {
       const profile = profiles.find(p => p.name.toLowerCase() === profileName.toLowerCase() && p.status === ProfileStatus.Running);
@@ -228,6 +280,7 @@ const App: React.FC = () => {
         speechVoicesSpoof: true,
         webGLVendor: 'Google Inc. (AMD)',
         webGLRenderer: 'ANGLE (AMD, AMD Radeon Pro 5700 XT OpenGL Engine, 4.1 ATI-4.2.13)',
+        healthStatus: { risk: 'unchecked', report: [], lastChecked: null },
     };
     setProfiles(prev => [...prev, newProfile]);
     if (proxy) {
@@ -306,6 +359,9 @@ const App: React.FC = () => {
                 onEdit={() => handleOpenProfileModal(profile)}
                 onDelete={handleDeleteRequest}
                 onLaunch={handleLaunchProfile}
+                onHealthCheck={handleHealthCheck}
+                onViewHealthReport={handleViewHealthReport}
+                isCheckingHealth={checkingHealthProfileId === profile.id}
               />
             ))}
           </div>
@@ -328,6 +384,13 @@ const App: React.FC = () => {
         extensions={allExtensions}
         onAdd={handleAddExtension}
         onRemove={handleRemoveExtension}
+      />
+
+      <HealthReportModal
+        isOpen={isHealthReportModalOpen}
+        onClose={() => setIsHealthReportModalOpen(false)}
+        profile={viewingHealthProfile}
+        onApplyFix={handleApplyHealthFix}
       />
 
       <ConfirmationModal
